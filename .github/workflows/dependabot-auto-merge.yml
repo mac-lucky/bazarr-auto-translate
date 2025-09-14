@@ -5,6 +5,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: read
+
 jobs:
   shared-dependabot-auto-merge:
     name: Shared Dependabot Auto-Merge
