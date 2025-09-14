@@ -1,0 +1,39 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+
+jobs:
+  ci-cd:
+    name: Python CI/CD Pipeline
+    uses: mac-lucky/actions-shared-workflows/.github/workflows/python-cicd-reusable.yml@main
+    with:
+      # Application configuration
+      app_name: "bazarr-auto-translate"
+      dockerhub_image: "maclucky/bazarr-auto-translate"
+      ghcr_image: "ghcr.io/mac-lucky/bazarr-auto-translate"
+      
+      # Build configuration
+      dockerfile_path: "./Dockerfile"
+      build_context: "."
+      requirements_path: "./requirements.txt"
+      
+      # Test configuration
+      enable_container_tests: true
+      enable_kubernetes_tests: false
+      
+      # Security and quality
+      enable_security_scan: true
+      enable_sbom: true
+      
+      # Deployment
+      enable_auto_version: true
+      push_on_main: true
+    secrets:
+      DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+      DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
