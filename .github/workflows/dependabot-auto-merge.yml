@@ -13,7 +13,7 @@ jobs:
       # Match the job names from the CI/CD pipeline (nested in reusable workflow)
       code_analysis_check_name: "CI/CD Pipeline / Code Quality & Security Analysis"
       container_test_check_name: "CI/CD Pipeline / Container Integration Test"
-      
+
       # Auto-merge configuration
       enable_auto_merge: true
       merge_method: "squash"
@@ -22,3 +22,4 @@ jobs:
       allow_minor: true
       allow_major: false
       additional_keywords: "deps,ci,docker"
+
