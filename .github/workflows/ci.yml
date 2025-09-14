@@ -12,6 +12,10 @@ jobs:
   ci-cd:
     name: Python CI/CD Pipeline
     uses: mac-lucky/actions-shared-workflows/.github/workflows/python-cicd-reusable.yml@master
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     with:
       # Application configuration
       app_name: "bazarr-auto-translate"

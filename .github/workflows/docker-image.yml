@@ -1,18 +1,8 @@
 name: Docker Image for Bazarr auto translate
 
+# TEMPORARILY DISABLED - Using new CI workflow instead
 on:
-  push:
-    branches: ["master"]
-    paths-ignore:
-      - "*.md"
-      - ".gitignore"
-      - ".dockerignore"
-  pull_request:
-    branches: ["master"]
-    paths-ignore:
-      - "*.md"
-      - ".gitignore"
-      - ".dockerignore"
+  workflow_dispatch:  # Only allow manual trigger when disabled
 
 jobs:
   build:
