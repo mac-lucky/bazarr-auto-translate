@@ -19,16 +19,26 @@ RUN /venv/bin/pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY bazarr-auto-translate.py .
 
-# Runtime stage - Use distroless Python image for maximum security
-FROM gcr.io/distroless/python3-debian12
+# Runtime stage - Use Alpine for better Python package compatibility
+FROM python:3.13-alpine
 
-# Copy virtual environment and application
+# Set working directory
+WORKDIR /app
+
+# Copy virtual environment and application from builder
 COPY --from=builder /venv /venv
 COPY --from=builder /app/bazarr-auto-translate.py /app/
 
-# Set working directory and environment
-WORKDIR /app
+# Set environment path
 ENV PATH="/venv/bin:$PATH"
+
+# Create non-root user
+RUN addgroup -g 1000 appgroup && \
+    adduser -u 1000 -G appgroup -s /bin/sh -D appuser && \
+    chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
 
 # Set default environment variables
 ENV BAZARR_HOSTNAME=localhost \
