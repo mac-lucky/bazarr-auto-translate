@@ -3,6 +3,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/maclucky/bazarr-auto-translate)](https://hub.docker.com/r/maclucky/bazarr-auto-translate)
 [![Docker Image Version](https://img.shields.io/docker/v/maclucky/bazarr-auto-translate/latest)](https://hub.docker.com/r/maclucky/bazarr-auto-translate/tags)
 [![GitHub Actions Workflow Status](https://github.com/mac-lucky/bazarr-auto-translate/actions/workflows/ci.yml/badge.svg)](https://github.com/mac-lucky/bazarr-auto-translate/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-blue)](https://hub.docker.com/r/maclucky/bazarr-auto-translate/tags)
 
 This project automatically downloads and translates subtitles for episodes and movies using the Bazarr API.
 
