@@ -5,6 +5,8 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  pull_request_target:
+    branches: [ main, master ]
   release:
     types: [ published ]
 
@@ -12,10 +14,12 @@ jobs:
   ci-cd:
     name: Python CI/CD Pipeline
     uses: mac-lucky/actions-shared-workflows/.github/workflows/python-cicd-reusable.yml@master
+    # Add permissions for dependabot PRs
     permissions:
       contents: read
       packages: write
       security-events: write
+      pull-requests: read
     with:
       # Application configuration
       app_name: "bazarr-auto-translate"
