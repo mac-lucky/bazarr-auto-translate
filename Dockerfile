@@ -1,5 +1,5 @@
 # Build stage - Use Alpine for smaller size and faster builds
-FROM python:3.13-alpine AS builder
+FROM python:3.14-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -20,7 +20,7 @@ RUN /venv/bin/pip install --no-cache-dir -r requirements.txt
 COPY bazarr-auto-translate.py .
 
 # Runtime stage - Use Alpine for better Python package compatibility
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 
 # Set working directory
 WORKDIR /app
