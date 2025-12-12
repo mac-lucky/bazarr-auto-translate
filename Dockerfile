@@ -1,8 +1,5 @@
-# Build stage - Use Alpine with uv for fast dependency installation
-FROM python:3.12-alpine AS builder
-
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Build stage - Use official uv image for fast dependency installation
+FROM ghcr.io/astral-sh/uv:python3.12-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -21,8 +18,8 @@ COPY bazarr-auto-translate.py .
 RUN uv venv /venv && \
     uv pip install --python /venv/bin/python -r pyproject.toml
 
-# Runtime stage - Use Alpine for smaller image
-FROM python:3.12-alpine
+# Runtime stage - Use official uv image
+FROM ghcr.io/astral-sh/uv:python3.12-alpine
 
 # Set working directory
 WORKDIR /app
