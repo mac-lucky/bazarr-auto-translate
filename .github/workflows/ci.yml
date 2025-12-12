@@ -25,20 +25,23 @@ jobs:
       app_name: "bazarr-auto-translate"
       dockerhub_image: "maclucky/bazarr-auto-translate"
       ghcr_image: "ghcr.io/mac-lucky/bazarr-auto-translate"
-      
+
       # Build configuration
       dockerfile_path: "./Dockerfile"
       build_context: "."
-      requirements_path: "./requirements.txt"
-      
+
+      # Package manager
+      use_uv: true
+
       # Test configuration
       enable_container_tests: true
       enable_kubernetes_tests: false
-      
+
       # Security and quality
       enable_security_scan: true
       enable_sbom: true
-      
+      enable_code_analysis: true
+
       # Deployment
       enable_auto_version: true
       push_on_main: true
