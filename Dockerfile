@@ -1,5 +1,5 @@
 # Build stage - Use Alpine with uv for fast dependency installation
-FROM python:3.12-alpine AS builder
+FROM python:3.14-alpine AS builder
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -22,7 +22,7 @@ RUN uv venv /venv && \
     uv pip install --python /venv/bin/python -r pyproject.toml
 
 # Runtime stage - Use Alpine for smaller image
-FROM python:3.12-alpine
+FROM python:3.14-alpine
 
 # Set working directory
 WORKDIR /app
