@@ -85,30 +85,30 @@ def process_subtitles(item, media_type):
     logger.info(f"Found {len(subs)} existing subtitles")
     logger.debug(f"Available subtitles: {[f'{s.get('code2', 'unknown')}: {s.get('path', 'no path')}' for s in subs]}")
     
-    if any(s['code2'] == FIRST_LANG for s in subs):
+    if any(s['code2'] == FIRST_LANG and s.get('path') for s in subs):
         logger.info(f"Found existing {FIRST_LANG} subtitles, skipping...")
         return
         
     # Try to find or download English subtitles
     logger.info("Looking for English subtitles...")
-    en_sub = next((s for s in subs if s['code2'] == 'en'), None)
+    en_sub = next((s for s in subs if s['code2'] == 'en' and s.get('path')), None)
     if not en_sub:
         logger.info("No English subtitles found, attempting to download...")
         download_subtitles(media_type, 'en', **params)
         media_info = get_subtitles_info(media_type, **{f"{k}[]": v for k, v in params.items()})
         if media_info and 'data' in media_info:
-            en_sub = next((s for s in media_info['data'][0]['subtitles'] if s['code2'] == 'en'), None)
+            en_sub = next((s for s in media_info['data'][0]['subtitles'] if s['code2'] == 'en' and s.get('path')), None)
             logger.info("English subtitles download completed")
     
-    if en_sub:
+    if en_sub and en_sub.get('path'):
         logger.info(f"Found English subtitles at: {en_sub['path']}")
         logger.info(f"Attempting to translate from English to {FIRST_LANG}...")
-        result = translate_subtitles(en_sub['path'], FIRST_LANG, 
-                                   'movie' if media_type == 'movies' else 'episode', 
+        result = translate_subtitles(en_sub['path'], FIRST_LANG,
+                                   'movie' if media_type == 'movies' else 'episode',
                                    item_id)
         logger.info(f"Translation result: {result}")
     else:
-        logger.error("No English subtitles found or downloaded")
+        logger.error("No English subtitles with valid path found or downloaded")
 
 def translate_movie_subs():
     logger.info("Starting movie subtitles translation process...")
