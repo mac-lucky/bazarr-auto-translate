@@ -19,7 +19,7 @@ jobs:
     uses: mac-lucky/actions-shared-workflows/.github/workflows/dependabot-auto-merge-reusable.yml@master
     with:
       # Match the job names from the CI/CD pipeline (nested in reusable workflow)
-      code_analysis_check_name: "Code Quality & Security Analysis"
+      code_analysis_check_name: "Code Analysis (trivy)"
       container_test_check_name: "Container Integration Test"
 
       # Auto-merge configuration
