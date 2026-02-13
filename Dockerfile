@@ -47,7 +47,12 @@ ENV BAZARR_HOSTNAME=localhost \
     BAZARR_PORT=6767 \
     BAZARR_APIKEY=<bazarr-api-key> \
     CRON_SCHEDULE="0 6 * * *" \
-    FIRST_LANG=pl
+    FIRST_LANG=pl \
+    RUN_NOW=false \
+    REQUEST_TIMEOUT=120 \
+    TRANSLATE_DELAY=5 \
+    MAX_RETRIES=5 \
+    INITIAL_BACKOFF=60
 
 # Run application
 ENTRYPOINT ["/venv/bin/python", "-u", "bazarr-auto-translate.py"]
