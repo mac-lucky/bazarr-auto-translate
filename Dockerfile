@@ -40,7 +40,7 @@ RUN addgroup -g 1000 appgroup && \
     chown -R appuser:appgroup /app
 
 # Switch to non-root user
-USER appuser
+USER 1000
 
 # Set default environment variables
 ENV BAZARR_HOSTNAME=localhost \
