@@ -1,3 +1,5 @@
+<img src="icon.svg" width="96" align="right" alt="">
+
 # bazarr-auto-translate
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/maclucky/bazarr-auto-translate)](https://hub.docker.com/r/maclucky/bazarr-auto-translate)
