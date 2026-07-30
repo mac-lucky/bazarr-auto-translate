@@ -1,8 +1,9 @@
+import json
 import os
 import random
 import requests
 from croniter import croniter
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import logging
 
@@ -31,7 +32,28 @@ MAX_RETRIES = max(0, int(os.environ.get('MAX_RETRIES', '5')))
 # Initial backoff delay in seconds before first retry (default: 60s)
 INITIAL_BACKOFF = int(os.environ.get('INITIAL_BACKOFF', '60'))
 
+# Ceiling for the doubling backoff (default: 300s). Without one, five retries
+# at a 60s start add up to 31 minutes of sleeping for a single subtitle.
+MAX_BACKOFF = max(1, int(os.environ.get('MAX_BACKOFF', '300')))
+
+# Stop starting new items once a run has been going this long, so a slow run
+# cannot swallow the next scheduled one (default: 6h, 0 disables).
+RUN_DEADLINE = max(0, int(os.environ.get('RUN_DEADLINE', '21600')))
+
+# Where to remember items nothing could be done for. If it is not writable the
+# daemon still works, it just retries hopeless items on every run.
+STATE_DIR = os.environ.get('STATE_DIR', '/state')
+
+# How long to leave an item alone after consecutive failures, in days.
+DEFER_DAYS = (1, 3, 7, 30)
+
 HEADERS = {'Accept': 'application/json', 'X-API-KEY': BAZARR_APIKEY}
+
+# What processing one item accomplished.
+TRANSLATED = 'translated'  # a translation request went out
+SATISFIED = 'satisfied'    # nothing to do, the target language is already there
+NO_SOURCE = 'no_source'    # nothing to translate from, worth deferring
+FAILED = 'failed'          # the lookup itself failed, just try again next run
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,20 +81,23 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
             response.raise_for_status()
             logger.debug(f"API Response: {response.status_code}")
             return response.json() if response.content else None
-        except requests.exceptions.Timeout:
-            logger.warning(f"Request timed out after {REQUEST_TIMEOUT}s: {url}")
+        # ConnectTimeout subclasses both of these, so catching them together
+        # keeps the ordering from deciding which handler wins. Bazarr getting
+        # restarted underneath a long-lived session lands here.
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.warning(f"Could not reach {url}: {e}")
             if attempt < retries:
                 backoff = _backoff_delay(attempt)
                 logger.info(f"Retrying in {backoff}s (attempt {attempt + 1}/{retries})...")
                 time.sleep(backoff)
             else:
-                logger.error(f"Request timed out after {retries + 1} attempts: {url}")
+                logger.error(f"Giving up on {url} after {max(retries, 0) + 1} attempts")
                 return None
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             # Retry on rate-limit (429) and server errors (5xx)
             if status and (status == 429 or status >= 500) and attempt < retries:
-                backoff = _backoff_delay(attempt)
+                backoff = _retry_after(e.response) or _backoff_delay(attempt)
                 logger.warning(
                     f"HTTP {status} from {url}. "
                     f"Retrying in {backoff}s (attempt {attempt + 1}/{retries})..."
@@ -86,15 +111,90 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
             return None
 
 
+def _retry_after(response):
+    """Seconds the server asked us to wait, or None if it did not say.
+
+    Retrying sooner than a 429 asks for just extends the rate-limit window.
+    """
+    if response is None:
+        return None
+    header = response.headers.get('Retry-After')
+    try:
+        return max(0.0, float(header))
+    except (TypeError, ValueError):
+        return None  # may be an HTTP-date, which Bazarr does not send
+
+
 def _backoff_delay(attempt):
     """Calculate exponential backoff with jitter.
 
-    Returns delay in seconds: INITIAL_BACKOFF * 2^attempt + random jitter (0-30s).
-    Example with 60s initial: 60s, 120s, 240s, 480s, 960s (+ jitter each).
+    Doubles from INITIAL_BACKOFF up to MAX_BACKOFF, plus 0-30s of jitter.
+    Example with a 60s start and a 300s ceiling: 60, 120, 240, 300, 300.
     """
-    delay = INITIAL_BACKOFF * (2 ** attempt)
+    delay = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
     jitter = random.uniform(0, 30)
     return delay + jitter
+
+def _state_path():
+    return os.path.join(STATE_DIR, 'deferred.json')
+
+def load_state():
+    """Items we gave up on previously, keyed by "<media_type>:<id>"."""
+    try:
+        with open(_state_path()) as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        logger.warning(f"Ignoring unreadable state at {_state_path()}: {e}")
+        return {}
+
+def save_state(state):
+    """Write the deferral state, or explain why hopeless items will repeat."""
+    path = _state_path()
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        # Write and rename so a crash cannot leave a half-written file behind.
+        temporary = f"{path}.tmp"
+        with open(temporary, 'w') as handle:
+            json.dump(state, handle, indent=2, sort_keys=True)
+        os.replace(temporary, path)
+    except OSError as e:
+        logger.warning(f"Could not save state to {path}: {e}. "
+                       "Items with no source subtitles will be retried every run.")
+
+def _item_id(item, media_type):
+    return item.get('radarrId' if media_type == 'movies' else 'sonarrEpisodeId')
+
+def _state_key(item, media_type):
+    return f"{media_type}:{_item_id(item, media_type)}"
+
+def _defer_until(failures):
+    """When to look at an item again after this many consecutive failures."""
+    days = DEFER_DAYS[min(failures, len(DEFER_DAYS)) - 1]
+    return datetime.now() + timedelta(days=days)
+
+def _is_deferred(entry, now):
+    if not entry:
+        return False
+    try:
+        return datetime.fromisoformat(entry['next_attempt']) > now
+    except (KeyError, TypeError, ValueError):
+        return False  # unparseable entry, treat the item as due
+
+def _record_outcome(state, item, media_type, outcome):
+    """Back an item off after a hopeless run, or clear it once it resolves."""
+    key = _state_key(item, media_type)
+    if outcome == NO_SOURCE:
+        failures = state.get(key, {}).get('failures', 0) + 1
+        next_attempt = _defer_until(failures)
+        state[key] = {'failures': failures,
+                      'next_attempt': next_attempt.isoformat(timespec='seconds')}
+        logger.info(f"Nothing to translate from after {failures} attempts, "
+                    f"leaving it until {next_attempt:%Y-%m-%d}")
+    elif outcome in (TRANSLATED, SATISFIED):
+        state.pop(key, None)
 
 def _entries(response):
     """The data list of a Bazarr list response, or [] if it is missing or empty."""
@@ -143,10 +243,10 @@ def translate_subtitles(sub_path, target_lang, media_type, media_id):
 def process_subtitles(item, media_type):
     """Process subtitles for a movie or episode.
 
-    Returns True if a translation request was sent, False otherwise.
+    Returns one of TRANSLATED, SATISFIED, NO_SOURCE or FAILED.
     """
     noun = media_type[:-1]
-    item_id = item.get('radarrId' if media_type == 'movies' else 'sonarrEpisodeId')
+    item_id = _item_id(item, media_type)
     series_id = item.get('sonarrSeriesId') if media_type == 'episodes' else None
     title = item.get('title' if media_type == 'movies' else 'seriesTitle')
 
@@ -156,7 +256,7 @@ def process_subtitles(item, media_type):
     # widen the lookup below into an unfiltered query over the whole library
     if not item_id or (media_type == 'episodes' and not series_id):
         logger.error(f"Skipping {noun} with no usable ID: {title}")
-        return False
+        return FAILED
 
     params = {'radarrid': item_id} if media_type == 'movies' else {'seriesid': series_id, 'episodeid': item_id}
     logger.info(f"Attempting to download {FIRST_LANG} subtitles...")
@@ -167,7 +267,7 @@ def process_subtitles(item, media_type):
     subs = get_current_subs(media_type, params)
     if subs is None:
         logger.error(f"Failed to get media info for {title} (ID: {item_id})")
-        return False
+        return FAILED
 
     logger.info(f"Found {len(subs)} existing subtitles")
     if logger.isEnabledFor(logging.DEBUG):
@@ -176,7 +276,7 @@ def process_subtitles(item, media_type):
 
     if _find_sub(subs, FIRST_LANG):
         logger.info(f"Found existing {FIRST_LANG} subtitles, skipping...")
-        return False
+        return SATISFIED
 
     logger.info("Looking for English subtitles...")
     en_sub = _find_sub(subs, 'en')
@@ -191,12 +291,28 @@ def process_subtitles(item, media_type):
         logger.info(f"Attempting to translate from English to {FIRST_LANG}...")
         result = translate_subtitles(en_sub['path'], FIRST_LANG, noun, item_id)
         logger.info(f"Translation result: {result}")
-        return True
+        return TRANSLATED
 
     logger.error("No English subtitles with valid path found or downloaded")
-    return False
+    return NO_SOURCE
 
-def translate_wanted(media_type):
+def _due_items(items, media_type, state):
+    """The wanted items worth attempting now, dropping ones still backed off."""
+    now = datetime.now()
+    due = [item for item in items
+           if not _is_deferred(state.get(_state_key(item, media_type)), now)]
+    if len(due) < len(items):
+        logger.info(f"Leaving {len(items) - len(due)} {media_type} deferred from earlier runs")
+    return due
+
+def _forget_resolved(items, media_type, state):
+    """Drop state for items Bazarr no longer wants, so the file cannot grow forever."""
+    wanted_keys = {_state_key(item, media_type) for item in items}
+    prefix = f"{media_type}:"
+    for key in [k for k in state if k.startswith(prefix) and k not in wanted_keys]:
+        del state[key]
+
+def translate_wanted(media_type, state, started=None):
     """Download and translate subtitles for every wanted movie or episode."""
     noun = media_type[:-1]
     logger.info(f"Starting {noun} subtitles translation process...")
@@ -206,20 +322,37 @@ def translate_wanted(media_type):
         logger.info(f"No {media_type} found needing subtitles")
         return
 
+    _forget_resolved(items, media_type, state)
     logger.info(f"Found {len(items)} {media_type} needing subtitles")
-    for i, item in enumerate(items):
+    due = _due_items(items, media_type, state)
+
+    for i, item in enumerate(due):
+        if _out_of_time(started):
+            logger.warning(f"Run budget of {RUN_DEADLINE}s used up, "
+                           f"{len(due) - i} {media_type} left for the next run")
+            return
         try:
-            translated = process_subtitles(item, media_type)
+            outcome = process_subtitles(item, media_type)
         except Exception:
             logger.exception(f"Failed to process {noun}, skipping to the next item")
-            translated = False
-        if translated and TRANSLATE_DELAY and i < len(items) - 1:
+            outcome = FAILED
+        _record_outcome(state, item, media_type, outcome)
+        if outcome == TRANSLATED and TRANSLATE_DELAY and i < len(due) - 1:
             logger.debug(f"Waiting {TRANSLATE_DELAY}s before next item...")
             time.sleep(TRANSLATE_DELAY)
 
+def _out_of_time(started):
+    return bool(RUN_DEADLINE and started is not None
+                and time.monotonic() - started >= RUN_DEADLINE)
+
 def main():
-    translate_wanted('episodes')
-    translate_wanted('movies')
+    state = load_state()
+    started = time.monotonic()
+    try:
+        translate_wanted('episodes', state, started)
+        translate_wanted('movies', state, started)
+    finally:
+        save_state(state)
 
 def get_next_run():
     """Calculate the next run time based on cron schedule."""
@@ -227,6 +360,14 @@ def get_next_run():
     return iter.get_next(datetime)
 
 if __name__ == "__main__":
+    # Warn rather than exit: an unconfigured container that keeps running is
+    # easier to inspect than one that restarts in a loop.
+    missing = [name for name, value in
+               (('BAZARR_HOSTNAME', BAZARR_HOSTNAME), ('BAZARR_APIKEY', BAZARR_APIKEY))
+               if not value]
+    if missing:
+        logger.warning(f"{' and '.join(missing)} not set - every API call will fail")
+
     if RUN_NOW:
         logger.info("RUN_NOW enabled - running immediately")
         main()
