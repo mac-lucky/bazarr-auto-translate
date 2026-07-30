@@ -2,44 +2,140 @@ import json
 import logging
 import os
 import random
+import signal
+import threading
 import time
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 import requests
 from croniter import croniter
 
+DEFAULT_CRON = "0 6 * * *"
+
+
+def _env_int(name, default, minimum=None):
+    """A whole number from the environment, saying which variable was wrong.
+
+    Never fatal. The container is started with no configuration at all in CI,
+    and a typo in one tunable should not stop a daemon whose other settings are
+    fine: a process that keeps running and says what it ignored is easier to
+    fix than one that restarts in a loop.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning(f"{name}={raw!r} is not a whole number, using {default}")
+            value = default
+    if minimum is not None and value < minimum:
+        logger.warning(
+            f"{name}={value} is below the minimum of {minimum}, using {minimum}"
+        )
+        value = minimum
+    return value
+
+
+def _env_cron(name, default):
+    """A cron expression croniter can parse, or the default with a warning.
+
+    Checked here rather than in get_next_run() so a typo cannot kill the
+    process on its first loop iteration, hours after it was configured.
+    """
+    value = os.environ.get(name, "").strip() or default
+    if croniter.is_valid(value):
+        return value
+    logger.warning(f"{name}={value!r} is not a cron expression, using {default!r}")
+    return default
+
+
+def _env_scheme(name, default="http"):
+    """The URL scheme to reach Bazarr on."""
+    value = os.environ.get(name, "").strip().lower() or default
+    if value in ("http", "https"):
+        return value
+    logger.warning(f"{name}={value!r} is not http or https, using {default!r}")
+    return default
+
+
+def _env_host(name):
+    """A bare hostname. A full URL here would build http://https://host."""
+    value = os.environ.get(name, "").strip()
+    if "://" in value:
+        logger.warning(
+            f"{name} should be a bare hostname, not a URL - dropping the scheme"
+        )
+        value = value.split("://", 1)[1].rstrip("/")
+    return value
+
+
+def _env_level(name, default):
+    """A logging level, plus the complaint to make once logging is configured."""
+    requested = os.environ.get(name, "").strip().upper()
+    if not requested:
+        return default, None
+    level = logging.getLevelNamesMapping().get(requested)
+    if level is None:
+        return default, (
+            f"{name}={requested!r} is not a log level, "
+            f"using {logging.getLevelName(default)}"
+        )
+    return level, None
+
+
+# Logging first: everything below reports its own problems through it.
+LOG_LEVEL, _bad_log_level = _env_level("LOG_LEVEL", logging.INFO)
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+# basicConfig does nothing once the root logger has a handler, which is the case
+# whenever this module is loaded a second time, so set our own level as well.
+logger.setLevel(LOG_LEVEL)
+if _bad_log_level:
+    logger.warning(_bad_log_level)
+
 # Bazarr Information
-BAZARR_HOSTNAME = os.environ.get("BAZARR_HOSTNAME", "")
+BAZARR_HOSTNAME = _env_host("BAZARR_HOSTNAME")
 BAZARR_PORT = os.environ.get("BAZARR_PORT", "6767")
 BAZARR_APIKEY = os.environ.get("BAZARR_APIKEY", "")
 
-CRON_SCHEDULE = os.environ.get("CRON_SCHEDULE", "0 6 * * *")
+# Scheme to reach Bazarr on. The API key travels in a header, so https is worth
+# having whenever Bazarr is not on a trusted LAN.
+BAZARR_SCHEME = _env_scheme("BAZARR_SCHEME")
+
+CRON_SCHEDULE = _env_cron("CRON_SCHEDULE", DEFAULT_CRON)
 
 FIRST_LANG = os.environ.get("FIRST_LANG", "pl")
 
 # Run immediately once and exit (useful for testing / on-demand runs)
 RUN_NOW = os.environ.get("RUN_NOW", "").lower() in ("1", "true", "yes")
 
-# Request timeout in seconds (default: 120s - translations can be slow)
-REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "120"))
+# Request timeout in seconds (default: 120s - translations can be slow).
+# urllib3 rejects a timeout of 0 with a ValueError that is not a
+# RequestException, so it would escape make_api_request entirely.
+REQUEST_TIMEOUT = _env_int("REQUEST_TIMEOUT", 120, minimum=1)
 
 # Delay between processing each subtitle in seconds (default: 5s)
 # Helps avoid hitting Google Translate rate limits (5 req/s)
-TRANSLATE_DELAY = max(0, int(os.environ.get("TRANSLATE_DELAY", "5")))
+TRANSLATE_DELAY = _env_int("TRANSLATE_DELAY", 5, minimum=0)
 
 # Maximum number of retries for failed API requests (default: 5)
-MAX_RETRIES = max(0, int(os.environ.get("MAX_RETRIES", "5")))
+MAX_RETRIES = _env_int("MAX_RETRIES", 5, minimum=0)
 
-# Initial backoff delay in seconds before first retry (default: 60s)
-INITIAL_BACKOFF = int(os.environ.get("INITIAL_BACKOFF", "60"))
+# Initial backoff delay in seconds before first retry (default: 60s). A negative
+# would reach time.sleep() inside the retry handler; 0 would retry a 429
+# instantly, which only extends the rate-limit window.
+INITIAL_BACKOFF = _env_int("INITIAL_BACKOFF", 60, minimum=1)
 
 # Ceiling for the doubling backoff (default: 300s). Without one, five retries
 # at a 60s start add up to 31 minutes of sleeping for a single subtitle.
-MAX_BACKOFF = max(1, int(os.environ.get("MAX_BACKOFF", "300")))
+MAX_BACKOFF = _env_int("MAX_BACKOFF", 300, minimum=1)
 
 # Stop starting new items once a run has been going this long, so a slow run
 # cannot swallow the next scheduled one (default: 6h, 0 disables).
-RUN_DEADLINE = max(0, int(os.environ.get("RUN_DEADLINE", "21600")))
+RUN_DEADLINE = _env_int("RUN_DEADLINE", 21600, minimum=0)
 
 # Where to remember items nothing could be done for. If it is not writable the
 # daemon still works, it just retries hopeless items on every run.
@@ -50,17 +146,58 @@ DEFER_DAYS = (1, 3, 7, 30)
 
 HEADERS = {"Accept": "application/json", "X-API-KEY": BAZARR_APIKEY}
 
+
+class MediaType(NamedTuple):
+    """What differs between the two halves of the Bazarr API.
+
+    The dict key this is stored under is also the prefix used in the state
+    file, so it has to stay plural: renaming it would orphan every deferral
+    already recorded on disk.
+    """
+
+    noun: str  # what the translate endpoint calls it, and how logs read
+    id_field: str  # the item's own id in a wanted-list entry
+    title_field: str
+    id_param: str  # how the subtitle endpoints want that id
+    series_id_field: str | None = None  # episodes are scoped by their series too
+    series_param: str | None = None
+
+
+# Episodes first: that is the order runs have always used, and whichever goes
+# first gets the RUN_DEADLINE budget.
+MEDIA_TYPES = {
+    "episodes": MediaType(
+        "episode",
+        "sonarrEpisodeId",
+        "seriesTitle",
+        "episodeid",
+        "sonarrSeriesId",
+        "seriesid",
+    ),
+    "movies": MediaType("movie", "radarrId", "title", "radarrid"),
+}
+
 # What processing one item accomplished.
 TRANSLATED = "translated"  # a translation request went out
 SATISFIED = "satisfied"  # nothing to do, the target language is already there
 NO_SOURCE = "no_source"  # nothing to translate from, worth deferring
 FAILED = "failed"  # the lookup itself failed, just try again next run
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Set when the process has been asked to stop. Everything that sleeps waits on
+# this instead, so a stop takes effect in milliseconds rather than at the end of
+# a cron interval.
+_shutdown = threading.Event()
+
+
+def _sleep(seconds):
+    """Sleep, unless we are shutting down. True means stop what you are doing."""
+    return _shutdown.wait(seconds)
+
+
+def _request_shutdown(signum, _frame):
+    logger.info(f"Received {signal.Signals(signum).name}, shutting down")
+    _shutdown.set()
+
 
 session = requests.Session()
 
@@ -74,7 +211,7 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
         retries: Max retry attempts for rate-limit/server errors (0 = no retries)
         **kwargs: Additional arguments passed to requests
     """
-    url = f"http://{BAZARR_HOSTNAME}:{BAZARR_PORT}/api/{endpoint}"
+    url = f"{BAZARR_SCHEME}://{BAZARR_HOSTNAME}:{BAZARR_PORT}/api/{endpoint}"
     logger.debug(f"Making {method} request to: {url}")
 
     for attempt in range(max(retries, 0) + 1):
@@ -95,7 +232,8 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
                 logger.info(
                     f"Retrying in {backoff}s (attempt {attempt + 1}/{retries})..."
                 )
-                time.sleep(backoff)
+                if _sleep(backoff):
+                    return None
             else:
                 logger.error(f"Giving up on {url} after {max(retries, 0) + 1} attempts")
                 return None
@@ -108,7 +246,8 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
                     f"HTTP {status} from {url}. "
                     f"Retrying in {backoff}s (attempt {attempt + 1}/{retries})..."
                 )
-                time.sleep(backoff)
+                if _sleep(backoff):
+                    return None
             else:
                 logger.error(f"API request failed: {e}")
                 return None
@@ -177,7 +316,7 @@ def save_state(state):
 
 
 def _item_id(item, media_type):
-    return item.get("radarrId" if media_type == "movies" else "sonarrEpisodeId")
+    return item.get(MEDIA_TYPES[media_type].id_field)
 
 
 def _state_key(item, media_type):
@@ -259,13 +398,17 @@ def download_subtitles(media_type, lang, **params):
     return make_api_request("PATCH", endpoint, params=params)
 
 
-def translate_subtitles(sub_path, target_lang, media_type, media_id):
-    """Translate subtitles to target language (with retries for rate limits)"""
+def translate_subtitles(sub_path, target_lang, entity_type, media_id):
+    """Translate subtitles to the target language, retrying through rate limits.
+
+    entity_type is Bazarr's singular 'movie'/'episode', unlike media_type
+    everywhere else in this file, which is the plural endpoint segment.
+    """
     params = {
         "action": "translate",
         "language": target_lang,
         "path": sub_path,
-        "type": media_type,
+        "type": entity_type,
         "id": media_id,
         "forced": False,
         "hi": False,
@@ -279,24 +422,23 @@ def process_subtitles(item, media_type):
 
     Returns one of TRANSLATED, SATISFIED, NO_SOURCE or FAILED.
     """
-    noun = media_type[:-1]
+    spec = MEDIA_TYPES[media_type]
+    noun = spec.noun
     item_id = _item_id(item, media_type)
-    series_id = item.get("sonarrSeriesId") if media_type == "episodes" else None
-    title = item.get("title" if media_type == "movies" else "seriesTitle")
+    series_id = item.get(spec.series_id_field) if spec.series_id_field else None
+    title = item.get(spec.title_field)
 
     logger.info(f"Processing {noun}: {title} (ID: {item_id})")
 
     # requests drops query params whose value is None, so a missing ID would
     # widen the lookup below into an unfiltered query over the whole library
-    if not item_id or (media_type == "episodes" and not series_id):
+    if not item_id or (spec.series_id_field and not series_id):
         logger.error(f"Skipping {noun} with no usable ID: {title}")
         return FAILED
 
-    params = (
-        {"radarrid": item_id}
-        if media_type == "movies"
-        else {"seriesid": series_id, "episodeid": item_id}
-    )
+    params = {spec.id_param: item_id}
+    if spec.series_param:
+        params[spec.series_param] = series_id
     logger.info(f"Attempting to download {FIRST_LANG} subtitles...")
     result = download_subtitles(media_type, FIRST_LANG, **params)
     logger.info(f"Download {FIRST_LANG} subtitles result: {result}")
@@ -364,7 +506,7 @@ def _forget_resolved(items, media_type, state):
 
 def translate_wanted(media_type, state, started=None):
     """Download and translate subtitles for every wanted movie or episode."""
-    noun = media_type[:-1]
+    noun = MEDIA_TYPES[media_type].noun
     logger.info(f"Starting {noun} subtitles translation process...")
     wanted = make_api_request(
         "GET", f"{media_type}/wanted", params={"start": 0, "length": -1}
@@ -379,6 +521,11 @@ def translate_wanted(media_type, state, started=None):
     due = _due_items(items, media_type, state)
 
     for i, item in enumerate(due):
+        if _shutdown.is_set():
+            logger.warning(
+                f"Shutting down, {len(due) - i} {media_type} left for the next run"
+            )
+            return
         if _out_of_time(started):
             logger.warning(
                 f"Run budget of {RUN_DEADLINE}s used up, "
@@ -392,8 +539,9 @@ def translate_wanted(media_type, state, started=None):
             outcome = FAILED
         _record_outcome(state, item, media_type, outcome)
         if outcome == TRANSLATED and TRANSLATE_DELAY and i < len(due) - 1:
-            logger.debug(f"Waiting {TRANSLATE_DELAY}s before next item...")
-            time.sleep(TRANSLATE_DELAY)
+            logger.debug("Waiting %ss before next item...", TRANSLATE_DELAY)
+            if _sleep(TRANSLATE_DELAY):
+                return
 
 
 def _out_of_time(started):
@@ -408,16 +556,38 @@ def main():
     state = load_state()
     started = time.monotonic()
     try:
-        translate_wanted("episodes", state, started)
-        translate_wanted("movies", state, started)
+        for media_type in MEDIA_TYPES:
+            translate_wanted(media_type, state, started)
     finally:
         save_state(state)
 
 
-def get_next_run():
-    """Calculate the next run time based on cron schedule."""
-    iter = croniter(CRON_SCHEDULE, _now())
-    return iter.get_next(datetime)
+def get_next_run(now=None):
+    """When the schedule next fires. Takes the clock so tests can pin it."""
+    schedule = croniter(CRON_SCHEDULE, now or _now())
+    return schedule.get_next(datetime)
+
+
+def run_forever():
+    """Run main() on CRON_SCHEDULE until asked to stop."""
+    while not _shutdown.is_set():
+        # Read the clock once: reading it again below leaves a window where a
+        # backwards step makes the wait negative.
+        now = _now()
+        next_run = get_next_run(now)
+        wait_seconds = max(0.0, (next_run - now).total_seconds())
+        logger.info(
+            f"Next run scheduled at {next_run:%Y-%m-%d %H:%M:%S}, "
+            f"{int(wait_seconds)}s from now"
+        )
+        if _sleep(wait_seconds):
+            break
+        logger.info("Starting the translate...")
+        try:
+            main()
+        except Exception:
+            logger.exception("Run failed, waiting for the next scheduled run")
+    logger.info("Stopped")
 
 
 if __name__ == "__main__":
@@ -434,21 +604,19 @@ if __name__ == "__main__":
     if missing:
         logger.warning(f"{' and '.join(missing)} not set - every API call will fail")
 
-    if RUN_NOW:
-        logger.info("RUN_NOW enabled - running immediately")
-        main()
-        logger.info("Run complete. Exiting.")
-    else:
-        # Main loop with cron scheduling
-        while True:
-            next_run = get_next_run()
-            now = _now()
-            wait_seconds = (next_run - now).total_seconds()
-            print(f"Next run scheduled at {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"Waiting for {int(wait_seconds)} seconds...")
-            time.sleep(wait_seconds)
-            print("Starting the translate...")
-            try:
-                main()
-            except Exception:
-                logger.exception("Run failed, waiting for the next scheduled run")
+    # As PID 1 the kernel drops SIGTERM unless a handler is installed, which is
+    # why `docker stop` waited out the whole grace period and then killed us.
+    # SIGINT is left alone on purpose: Python's own handler already turns it
+    # into KeyboardInterrupt, even at PID 1.
+    signal.signal(signal.SIGTERM, _request_shutdown)
+
+    try:
+        if RUN_NOW:
+            logger.info("RUN_NOW enabled - running immediately")
+            main()
+            logger.info("Run complete. Exiting.")
+        else:
+            run_forever()
+    except KeyboardInterrupt:
+        logger.info("Interrupted")
+        raise SystemExit(130)

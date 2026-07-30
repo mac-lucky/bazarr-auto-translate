@@ -6,8 +6,12 @@ only reads environment variables, configures logging and builds a Session.
 """
 
 import importlib.util
+import logging
 import os
+import signal
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -34,6 +38,8 @@ CONFIG_VARS = (
     "MAX_BACKOFF",
     "RUN_DEADLINE",
     "STATE_DIR",
+    "LOG_LEVEL",
+    "BAZARR_SCHEME",
 )
 
 
@@ -96,9 +102,14 @@ def translated(bat, monkeypatch):
 
 @pytest.fixture
 def sleeps(bat, monkeypatch):
-    """Records every time.sleep duration instead of actually sleeping."""
+    """Records every pause instead of taking it.
+
+    False means "not shutting down", matching what _sleep returns.
+    """
     recorded = []
-    monkeypatch.setattr(bat.time, "sleep", recorded.append)
+    monkeypatch.setattr(
+        bat, "_sleep", lambda seconds: recorded.append(seconds) or False
+    )
     return recorded
 
 
@@ -368,7 +379,7 @@ class FakeResponse:
 def transport(raw, monkeypatch):
     """Drive make_api_request from the socket up, recording calls and sleeps."""
     calls, naps = [], []
-    monkeypatch.setattr(raw.time, "sleep", naps.append)
+    monkeypatch.setattr(raw, "_sleep", lambda seconds: naps.append(seconds) or False)
     monkeypatch.setattr(raw.random, "uniform", lambda a, b: 0)
     monkeypatch.setattr(raw, "INITIAL_BACKOFF", 60)
     monkeypatch.setattr(raw, "MAX_BACKOFF", 300)
@@ -674,3 +685,250 @@ def test_deadline_of_zero_disables_the_budget(bat, monkeypatch):
     )
     bat.translate_wanted("movies", {}, started=0)
     assert len(seen) == 2
+
+
+# Configuration parsing: a typo must not take the daemon down
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        pytest.param(None, 120, id="unset"),
+        pytest.param("", 120, id="empty"),
+        pytest.param("  45 ", 45, id="padded"),
+        pytest.param("120s", 120, id="unit-suffix"),
+        pytest.param("nope", 120, id="not-a-number"),
+        pytest.param("0", 1, id="below-the-minimum"),
+        pytest.param("-30", 1, id="negative"),
+    ],
+)
+def test_env_int(raw, monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("REQUEST_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("REQUEST_TIMEOUT", value)
+    assert raw._env_int("REQUEST_TIMEOUT", 120, minimum=1) == expected
+
+
+def test_bad_values_name_the_variable_and_still_import(clean_env, caplog):
+    """CI starts the container with no configuration and needs it alive 10s
+    later, so a bad value must not be worse than a missing one."""
+    clean_env.setenv("REQUEST_TIMEOUT", "120s")
+    clean_env.setenv("INITIAL_BACKOFF", "-30")
+    with caplog.at_level("WARNING"):
+        module = _load_module(clean_env)
+    assert module.REQUEST_TIMEOUT == 120
+    assert module.INITIAL_BACKOFF == 1
+    assert "REQUEST_TIMEOUT" in caplog.text
+    assert "INITIAL_BACKOFF" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        pytest.param("*/10 * * * *", "*/10 * * * *", id="valid"),
+        pytest.param("@daily", "@daily", id="shorthand"),
+        pytest.param("", "0 6 * * *", id="empty-falls-back"),
+        pytest.param("every 10 minutes", "0 6 * * *", id="prose-falls-back"),
+        pytest.param("0 25 * * *", "0 6 * * *", id="out-of-range-falls-back"),
+        pytest.param("0 6 * *", "0 6 * * *", id="too-few-fields-falls-back"),
+    ],
+)
+def test_cron_schedule_is_validated_at_import(clean_env, value, expected):
+    """Regression: croniter() was built inside the loop, so a typo killed the
+    process on its first iteration rather than at configuration time."""
+    clean_env.setenv("CRON_SCHEDULE", value)
+    assert _load_module(clean_env).CRON_SCHEDULE == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        pytest.param(None, "INFO", id="default"),
+        pytest.param("debug", "DEBUG", id="case-insensitive"),
+        pytest.param("WARNING", "WARNING", id="quieter"),
+        pytest.param("chatty", "INFO", id="nonsense-falls-back"),
+    ],
+)
+def test_log_level(clean_env, value, expected):
+    if value is not None:
+        clean_env.setenv("LOG_LEVEL", value)
+    module = _load_module(clean_env)
+    assert module.LOG_LEVEL == logging.getLevelNamesMapping()[expected]
+    assert module.logger.isEnabledFor(module.LOG_LEVEL)
+
+
+@pytest.mark.parametrize(
+    "scheme,expected",
+    [
+        pytest.param(None, "http", id="default"),
+        pytest.param("https", "https", id="https"),
+        pytest.param("HTTPS", "https", id="case-insensitive"),
+        pytest.param("ftp", "http", id="unsupported-falls-back"),
+    ],
+)
+def test_bazarr_scheme(clean_env, scheme, expected):
+    if scheme is not None:
+        clean_env.setenv("BAZARR_SCHEME", scheme)
+    assert _load_module(clean_env).BAZARR_SCHEME == expected
+
+
+def test_https_reaches_the_url(clean_env, monkeypatch):
+    clean_env.setenv("BAZARR_SCHEME", "https")
+    clean_env.setenv("BAZARR_HOSTNAME", "bazarr.example.com")
+    module = _load_module(clean_env)
+    seen = []
+
+    def record(method, url, **kwargs):
+        seen.append(url)
+        raise requests.exceptions.ConnectionError("stop here")
+
+    monkeypatch.setattr(module.session, "request", record)
+    module.make_api_request("GET", "movies/wanted")
+    assert seen == ["https://bazarr.example.com:6767/api/movies/wanted"]
+
+
+def test_hostname_given_as_a_url_is_repaired(clean_env):
+    """http://https://host is the natural mistake and produces an InvalidURL."""
+    clean_env.setenv("BAZARR_HOSTNAME", "https://bazarr.example.com/")
+    assert _load_module(clean_env).BAZARR_HOSTNAME == "bazarr.example.com"
+
+
+# The scheduler, reachable for the first time now that it is a function
+
+
+def test_run_forever_runs_then_stops(bat, monkeypatch):
+    runs, waits = [], []
+
+    def one_run():
+        runs.append("ran")
+        bat._shutdown.set()
+
+    def next_run(now=None):
+        waits.append(1)
+        return bat._now()
+
+    monkeypatch.setattr(bat, "get_next_run", next_run)
+    monkeypatch.setattr(bat, "main", one_run)
+    bat.run_forever()
+    assert runs == ["ran"]
+    # Exactly one pass: the loop must re-check the flag rather than relying on
+    # the next _sleep to bail out.
+    assert len(waits) == 1
+
+
+def test_run_forever_does_not_start_a_run_after_a_stop(bat, monkeypatch):
+    """docker stop during the wait must not kick off a six-hour run."""
+    monkeypatch.setattr(
+        bat, "get_next_run", lambda now=None: bat._now() + timedelta(hours=1)
+    )
+    monkeypatch.setattr(
+        bat, "main", lambda: pytest.fail("started a run while shutting down")
+    )
+    bat._shutdown.set()
+    bat.run_forever()
+
+
+def test_run_forever_wakes_up_when_asked_to_stop(bat, monkeypatch):
+    """Regression: the loop slept through the whole cron gap, so docker stop
+    always waited out the grace period and then killed us."""
+    monkeypatch.setattr(
+        bat, "get_next_run", lambda now=None: bat._now() + timedelta(days=1)
+    )
+    monkeypatch.setattr(bat, "main", lambda: pytest.fail("ran early"))
+    threading.Timer(0.05, bat._shutdown.set).start()
+    started = time.monotonic()
+    bat.run_forever()
+    assert time.monotonic() - started < 5
+
+
+def test_run_forever_survives_a_failing_run(bat, monkeypatch):
+    calls = []
+
+    def boom():
+        calls.append(1)
+        if len(calls) == 2:
+            bat._shutdown.set()
+        raise RuntimeError("Bazarr went away")
+
+    monkeypatch.setattr(bat, "get_next_run", lambda now=None: bat._now())
+    monkeypatch.setattr(bat, "main", boom)
+    bat.run_forever()
+    assert len(calls) == 2
+
+
+def test_sigterm_asks_for_a_shutdown(bat):
+    bat._request_shutdown(signal.SIGTERM, None)
+    assert bat._shutdown.is_set()
+
+
+def test_translate_wanted_stops_between_items_on_shutdown(bat, monkeypatch):
+    stub_wanted(bat, monkeypatch, {"data": [MOVIE, MOVIE, MOVIE]})
+    seen = []
+
+    def process(item, media_type):
+        seen.append(item)
+        bat._shutdown.set()
+        return bat.SATISFIED
+
+    monkeypatch.setattr(bat, "process_subtitles", process)
+    bat.translate_wanted("movies", {})
+    assert seen == [MOVIE]
+
+
+@pytest.mark.parametrize(
+    "schedule,now,expected",
+    [
+        pytest.param("0 6 * * *", (2026, 3, 1, 5), (2026, 3, 1, 6), id="later-today"),
+        pytest.param(
+            "0 6 * * *", (2026, 3, 1, 6), (2026, 3, 2, 6), id="never-returns-now"
+        ),
+        pytest.param(
+            "*/15 * * * *", (2026, 3, 1, 5, 1), (2026, 3, 1, 5, 15), id="step"
+        ),
+    ],
+)
+def test_get_next_run_follows_the_schedule(bat, monkeypatch, schedule, now, expected):
+    """Aware datetimes, matching what _now() hands the scheduler in production."""
+    monkeypatch.setattr(bat, "CRON_SCHEDULE", schedule)
+    assert (
+        bat.get_next_run(datetime(*now).astimezone())
+        == datetime(*expected).astimezone()
+    )
+
+
+def test_main_does_episodes_before_movies(bat, monkeypatch):
+    """Whichever runs first gets the RUN_DEADLINE budget, so the order is a
+    decision, not an accident of dict ordering."""
+    seen = []
+    monkeypatch.setattr(bat, "load_state", dict)
+    monkeypatch.setattr(bat, "save_state", lambda state: None)
+    monkeypatch.setattr(
+        bat, "translate_wanted", lambda mt, state, started=None: seen.append(mt)
+    )
+    bat.main()
+    assert seen == ["episodes", "movies"]
+
+
+def test_main_saves_state_even_when_a_run_raises(bat, monkeypatch):
+    saved = []
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Bazarr changed its schema")
+
+    monkeypatch.setattr(bat, "load_state", lambda: {"movies:1": {"failures": 1}})
+    monkeypatch.setattr(bat, "save_state", saved.append)
+    monkeypatch.setattr(bat, "translate_wanted", boom)
+    with pytest.raises(RuntimeError):
+        bat.main()
+    assert saved == [{"movies:1": {"failures": 1}}]
+
+
+def test_the_title_comes_from_the_media_type_table(bat, monkeypatch, caplog):
+    """The title only ever reaches a log line, so nothing else pins the field."""
+    monkeypatch.setattr(bat, "get_subtitles_info", lambda *a, **kw: None)
+    with caplog.at_level("INFO"):
+        bat.process_subtitles(MOVIE, "movies")
+        bat.process_subtitles(EPISODE, "episodes")
+    assert "Processing movie: Test Movie" in caplog.text
+    assert "Processing episode: Test Series" in caplog.text
