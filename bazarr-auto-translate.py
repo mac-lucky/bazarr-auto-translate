@@ -184,10 +184,20 @@ def _state_key(item, media_type):
     return f"{media_type}:{_item_id(item, media_type)}"
 
 
+def _now():
+    """Current time, aware, in the container's timezone.
+
+    Aware rather than naive so the deferral timestamps we persist can be compared
+    without guessing, and local rather than UTC because TZ is what the cron schedule
+    and the dates in the log are expected to follow.
+    """
+    return datetime.now().astimezone()
+
+
 def _defer_until(failures):
     """When to look at an item again after this many consecutive failures."""
     days = DEFER_DAYS[min(failures, len(DEFER_DAYS)) - 1]
-    return datetime.now() + timedelta(days=days)
+    return _now() + timedelta(days=days)
 
 
 def _is_deferred(entry, now):
@@ -196,7 +206,9 @@ def _is_deferred(entry, now):
     try:
         return datetime.fromisoformat(entry["next_attempt"]) > now
     except (KeyError, TypeError, ValueError):
-        return False  # unparseable entry, treat the item as due
+        # Unparseable entry, treat the item as due. Naive timestamps written before
+        # _now() went aware land here too: they lapse once and are rewritten aware.
+        return False
 
 
 def _record_outcome(state, item, media_type, outcome):
@@ -334,7 +346,7 @@ def process_subtitles(item, media_type):
 
 def _due_items(items, media_type, state):
     """The wanted items worth attempting now, dropping ones still backed off."""
-    now = datetime.now()
+    now = _now()
     due = [
         item
         for item in items
@@ -409,7 +421,7 @@ def main():
 
 def get_next_run():
     """Calculate the next run time based on cron schedule."""
-    iter = croniter(CRON_SCHEDULE, datetime.now())
+    iter = croniter(CRON_SCHEDULE, _now())
     return iter.get_next(datetime)
 
 
@@ -435,7 +447,7 @@ if __name__ == "__main__":
         # Main loop with cron scheduling
         while True:
             next_run = get_next_run()
-            now = datetime.now()
+            now = _now()
             wait_seconds = (next_run - now).total_seconds()
             print(f"Next run scheduled at {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"Waiting for {int(wait_seconds)} seconds...")

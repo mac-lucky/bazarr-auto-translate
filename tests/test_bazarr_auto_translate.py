@@ -520,7 +520,7 @@ def test_no_source_defers_the_item(state_dir, monkeypatch):
     bat.translate_wanted("movies", state)
     entry = state["movies:1"]
     assert entry["failures"] == 1
-    assert datetime.fromisoformat(entry["next_attempt"]) > datetime.now()
+    assert datetime.fromisoformat(entry["next_attempt"]) > datetime.now().astimezone()
 
 
 def test_repeated_failures_back_off_further(state_dir):
@@ -529,7 +529,9 @@ def test_repeated_failures_back_off_further(state_dir):
         bat._record_outcome(state, MOVIE, "movies", bat.NO_SOURCE)
         entry = state["movies:1"]
         assert entry["failures"] == expected_failures
-        gap = datetime.fromisoformat(entry["next_attempt"]) - datetime.now()
+        gap = (
+            datetime.fromisoformat(entry["next_attempt"]) - datetime.now().astimezone()
+        )
         assert abs(gap.total_seconds() - expected_days * 86400) < 60
 
 
@@ -539,7 +541,10 @@ def test_backoff_stops_growing_at_the_last_step(state_dir):
         {"movies:1": {"failures": 99, "next_attempt": "2020-01-01T00:00:00"}},
     )
     bat._record_outcome(state, MOVIE, "movies", bat.NO_SOURCE)
-    gap = datetime.fromisoformat(state["movies:1"]["next_attempt"]) - datetime.now()
+    gap = (
+        datetime.fromisoformat(state["movies:1"]["next_attempt"])
+        - datetime.now().astimezone()
+    )
     assert abs(gap.total_seconds() - bat.DEFER_DAYS[-1] * 86400) < 60
 
 
@@ -559,7 +564,9 @@ def test_transient_failure_does_not_defer(state_dir):
 
 def test_deferred_items_are_skipped(state_dir, monkeypatch):
     bat = state_dir
-    future = (datetime.now() + timedelta(days=2)).isoformat(timespec="seconds")
+    future = (datetime.now().astimezone() + timedelta(days=2)).isoformat(
+        timespec="seconds"
+    )
     state = {"movies:1": {"failures": 1, "next_attempt": future}}
     stub_wanted(bat, monkeypatch, {"data": [MOVIE]})
     monkeypatch.setattr(
@@ -570,7 +577,9 @@ def test_deferred_items_are_skipped(state_dir, monkeypatch):
 
 def test_item_is_retried_once_the_deferral_lapses(state_dir, monkeypatch):
     bat = state_dir
-    past = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    past = (datetime.now().astimezone() - timedelta(days=1)).isoformat(
+        timespec="seconds"
+    )
     state = {"movies:1": {"failures": 1, "next_attempt": past}}
     seen = []
     stub_wanted(bat, monkeypatch, {"data": [MOVIE]})
