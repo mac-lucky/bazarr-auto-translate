@@ -185,12 +185,7 @@ def _state_key(item, media_type):
 
 
 def _now():
-    """Current time, aware, in the container's timezone.
-
-    Aware rather than naive so the deferral timestamps we persist can be compared
-    without guessing, and local rather than UTC because TZ is what the cron schedule
-    and the dates in the log are expected to follow.
-    """
+    """Aware local time - TZ still decides the schedule and the logged dates."""
     return datetime.now().astimezone()
 
 
