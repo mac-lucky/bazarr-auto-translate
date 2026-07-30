@@ -26,11 +26,31 @@ This project automatically downloads and translates subtitles for episodes and m
 
 ## Environment Variables
 
-- `BAZARR_HOSTNAME`: The hostname of your Bazarr instance (required)
-- `BAZARR_PORT`: The port of your Bazarr instance (default: `6767`)
-- `BAZARR_APIKEY`: Your Bazarr API key (required)
-- `CRON_SCHEDULE`: The cron schedule for running the script (default: `0 6 * * *` - runs at 6 AM daily)
-- `FIRST_LANG`: The target language code for subtitles (default: `pl`)
+| Variable | Default | What it does |
+|---|---|---|
+| `BAZARR_HOSTNAME` | (required) | Hostname of your Bazarr instance |
+| `BAZARR_PORT` | `6767` | Port of your Bazarr instance |
+| `BAZARR_APIKEY` | (required) | Your Bazarr API key |
+| `CRON_SCHEDULE` | `0 6 * * *` | When to run, in the container's local time |
+| `FIRST_LANG` | `pl` | Target language code |
+| `RUN_NOW` | `false` | Run once immediately and exit, instead of scheduling |
+| `REQUEST_TIMEOUT` | `120` | Seconds to wait on an API call before giving up |
+| `TRANSLATE_DELAY` | `5` | Seconds to pause after each translation, to stay under Google Translate's rate limit. Only applies when a translation actually happened |
+| `MAX_RETRIES` | `5` | Retry attempts for a rate-limited or failing translate call |
+| `INITIAL_BACKOFF` | `60` | Seconds before the first retry, doubling after that |
+| `MAX_BACKOFF` | `300` | Ceiling for the doubling backoff |
+| `RUN_DEADLINE` | `21600` | Stop starting new items after this many seconds, so a slow run cannot swallow the next scheduled one. `0` disables |
+| `STATE_DIR` | `/state` | Where to remember items nothing could be done for, so they are not re-searched every run. Works without a volume, it just forgets between runs |
+
+### Deferring hopeless items
+
+An item with no subtitles in your target language and no English subtitles to
+translate from stays on Bazarr's wanted list indefinitely. Without somewhere to
+record that, every run asks the providers again and gets the same answer.
+
+Mount a volume at `STATE_DIR` and the retry gap grows as attempts fail: 1 day,
+then 3, 7, and 30. Anything that succeeds, or that Bazarr stops wanting, is
+forgotten immediately.
 
 ## Running with Docker
 
@@ -44,6 +64,7 @@ docker run -e BAZARR_HOSTNAME=your_bazarr_hostname \
            -e BAZARR_APIKEY=your_bazarr_apikey \
            -e CRON_SCHEDULE='0 6 * * *' \
            -e FIRST_LANG=pl \
+           -v bazarr-auto-translate-state:/state \
            maclucky/bazarr-auto-translate:latest
 ```
 
@@ -51,7 +72,7 @@ docker run -e BAZARR_HOSTNAME=your_bazarr_hostname \
 
 1. Clone the repository:
     ```sh
-    git clone https://github.com/yourusername/bazarr-auto-translate.git
+    git clone https://github.com/mac-lucky/bazarr-auto-translate.git
     cd bazarr-auto-translate
     ```
 
@@ -67,6 +88,7 @@ docker run  -e BAZARR_HOSTNAME=your_bazarr_hostname \
             -e BAZARR_APIKEY=your_bazarr_apikey \
             -e CRON_SCHEDULE='0 6 * * *' \
             -e FIRST_LANG=pl \
+            -v bazarr-auto-translate-state:/state \
             bazarr-auto-translate
 ```
 

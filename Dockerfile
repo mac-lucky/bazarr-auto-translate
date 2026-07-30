@@ -34,25 +34,20 @@ COPY --from=builder /app/bazarr-auto-translate.py /app/
 # Set environment path
 ENV PATH="/venv/bin:$PATH"
 
-# Create non-root user
+# Create non-root user. /state has to exist in the image and be owned by that
+# user, otherwise a named volume mounted there is created root-owned and the
+# daemon cannot record which items it gave up on.
 RUN addgroup -g 1000 appgroup && \
     adduser -u 1000 -G appgroup -s /bin/sh -D appuser && \
-    chown -R appuser:appgroup /app
+    mkdir -p /state && \
+    chown -R appuser:appgroup /app /state
 
 # Switch to non-root user
 USER 1000
 
-# Set default environment variables
-ENV BAZARR_HOSTNAME=localhost \
-    BAZARR_PORT=6767 \
-    BAZARR_APIKEY=<bazarr-api-key> \
-    CRON_SCHEDULE="0 6 * * *" \
-    FIRST_LANG=pl \
-    RUN_NOW=false \
-    REQUEST_TIMEOUT=120 \
-    TRANSLATE_DELAY=5 \
-    MAX_RETRIES=5 \
-    INITIAL_BACKOFF=60
+# Defaults live in the script itself. Repeating them here only shadowed them
+# from a second place, and shipped a placeholder that was sent as a real
+# X-API-KEY header. See the README for the full list.
 
 # Run application
 ENTRYPOINT ["/venv/bin/python", "-u", "bazarr-auto-translate.py"]
