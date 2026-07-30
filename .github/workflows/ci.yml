@@ -29,6 +29,9 @@ jobs:
           # interpreter version is load-bearing.
           python-version: "3.14"
 
+      - name: Lint
+        run: uvx ruff check . && uvx ruff format --check .
+
       - name: Run tests
         run: uv run --locked --group dev pytest tests/ -q
 

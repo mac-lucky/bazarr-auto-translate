@@ -28,10 +28,11 @@ This project automatically downloads and translates subtitles for episodes and m
 
 | Variable | Default | What it does |
 |---|---|---|
-| `BAZARR_HOSTNAME` | (required) | Hostname of your Bazarr instance |
+| `BAZARR_HOSTNAME` | (required) | Hostname of your Bazarr instance, without a scheme |
 | `BAZARR_PORT` | `6767` | Port of your Bazarr instance |
 | `BAZARR_APIKEY` | (required) | Your Bazarr API key |
-| `CRON_SCHEDULE` | `0 6 * * *` | When to run, in the container's local time |
+| `BAZARR_SCHEME` | `http` | `http` or `https`. The API key travels in a header, so prefer `https` off a trusted LAN |
+| `CRON_SCHEDULE` | `0 6 * * *` | When to run, in the container's local time. Set `TZ` to choose that zone; without it the container runs on UTC |
 | `FIRST_LANG` | `pl` | Target language code |
 | `RUN_NOW` | `false` | Run once immediately and exit, instead of scheduling |
 | `REQUEST_TIMEOUT` | `120` | Seconds to wait on an API call before giving up |
@@ -41,6 +42,12 @@ This project automatically downloads and translates subtitles for episodes and m
 | `MAX_BACKOFF` | `300` | Ceiling for the doubling backoff |
 | `RUN_DEADLINE` | `21600` | Stop starting new items after this many seconds, so a slow run cannot swallow the next scheduled one. `0` disables |
 | `STATE_DIR` | `/state` | Where to remember items nothing could be done for, so they are not re-searched every run. Works without a volume, it just forgets between runs |
+| `LOG_LEVEL` | `INFO` | `DEBUG` adds the request URLs and the per-item subtitle listing |
+| `TZ` | (unset) | Timezone for the schedule and the logs, e.g. `Europe/Warsaw` |
+
+An unusable value is reported by name and replaced with the default, rather than
+stopping the container: a typo in one setting should not take down a daemon whose
+other settings are fine.
 
 ### Deferring hopeless items
 
@@ -91,6 +98,12 @@ docker run  -e BAZARR_HOSTNAME=your_bazarr_hostname \
             -v bazarr-auto-translate-state:/state \
             bazarr-auto-translate
 ```
+
+## Stopping
+
+The container handles `SIGTERM`, so `docker stop` returns in about a second
+instead of waiting out the grace period. An in-flight run finishes the item it
+is on, records what it learned, and leaves the rest for the next run.
 
 ## Logging
 
