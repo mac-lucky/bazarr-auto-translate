@@ -23,10 +23,10 @@ REQUEST_TIMEOUT = int(os.environ.get('REQUEST_TIMEOUT', '120'))
 
 # Delay between processing each subtitle in seconds (default: 5s)
 # Helps avoid hitting Google Translate rate limits (5 req/s)
-TRANSLATE_DELAY = int(os.environ.get('TRANSLATE_DELAY', '5'))
+TRANSLATE_DELAY = max(0, int(os.environ.get('TRANSLATE_DELAY', '5')))
 
 # Maximum number of retries for failed API requests (default: 5)
-MAX_RETRIES = int(os.environ.get('MAX_RETRIES', '5'))
+MAX_RETRIES = max(0, int(os.environ.get('MAX_RETRIES', '5')))
 
 # Initial backoff delay in seconds before first retry (default: 60s)
 INITIAL_BACKOFF = int(os.environ.get('INITIAL_BACKOFF', '60'))
@@ -51,7 +51,7 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
     url = f"http://{BAZARR_HOSTNAME}:{BAZARR_PORT}/api/{endpoint}"
     logger.debug(f"Making {method} request to: {url}")
 
-    for attempt in range(retries + 1):
+    for attempt in range(max(retries, 0) + 1):
         try:
             response = session.request(
                 method, url, headers=HEADERS, timeout=REQUEST_TIMEOUT, **kwargs
@@ -96,9 +96,29 @@ def _backoff_delay(attempt):
     jitter = random.uniform(0, 30)
     return delay + jitter
 
+def _entries(response):
+    """The data list of a Bazarr list response, or [] if it is missing or empty."""
+    data = (response or {}).get('data')
+    return data if isinstance(data, list) else []
+
+def _find_sub(subs, lang):
+    """First subtitle for lang that Bazarr already has on disk, or None."""
+    return next((s for s in subs if s.get('code2') == lang and s.get('path')), None)
+
 def get_subtitles_info(media_type, **params):
     """Get subtitle information for episode or movie"""
     return make_api_request('GET', media_type, params=params)
+
+def get_current_subs(media_type, params):
+    """Subtitles Bazarr currently holds for one item, or None if the lookup failed.
+
+    Bazarr wants the ids as repeated `key[]` query params.
+    """
+    info = get_subtitles_info(media_type, **{f"{k}[]": v for k, v in params.items()})
+    entries = _entries(info)
+    if not entries:
+        return None
+    return entries[0].get('subtitles') or []
 
 def download_subtitles(media_type, lang, **params):
     """Download subtitles for specified language"""
@@ -121,82 +141,85 @@ def translate_subtitles(sub_path, target_lang, media_type, media_id):
     return make_api_request('PATCH', 'subtitles', retries=MAX_RETRIES, params=params)
 
 def process_subtitles(item, media_type):
-    """Process subtitles for a movie or episode"""
+    """Process subtitles for a movie or episode.
+
+    Returns True if a translation request was sent, False otherwise.
+    """
+    noun = media_type[:-1]
     item_id = item.get('radarrId' if media_type == 'movies' else 'sonarrEpisodeId')
     series_id = item.get('sonarrSeriesId') if media_type == 'episodes' else None
     title = item.get('title' if media_type == 'movies' else 'seriesTitle')
-    
-    logger.info(f"Processing {media_type[:-1]}: {title} (ID: {item_id})")
-    
-    # Download FIRST_LANG subtitles
+
+    logger.info(f"Processing {noun}: {title} (ID: {item_id})")
+
+    # requests drops query params whose value is None, so a missing ID would
+    # widen the lookup below into an unfiltered query over the whole library
+    if not item_id or (media_type == 'episodes' and not series_id):
+        logger.error(f"Skipping {noun} with no usable ID: {title}")
+        return False
+
     params = {'radarrid': item_id} if media_type == 'movies' else {'seriesid': series_id, 'episodeid': item_id}
     logger.info(f"Attempting to download {FIRST_LANG} subtitles...")
     result = download_subtitles(media_type, FIRST_LANG, **params)
     logger.info(f"Download {FIRST_LANG} subtitles result: {result}")
-    
-    # Check subtitles
+
     logger.info("Checking current subtitles status...")
-    media_info = get_subtitles_info(media_type, **{f"{k}[]": v for k, v in params.items()})
-    if not media_info or 'data' not in media_info:
-        logger.error("Failed to get media info")
-        return
-        
-    subs = media_info['data'][0]['subtitles']
+    subs = get_current_subs(media_type, params)
+    if subs is None:
+        logger.error(f"Failed to get media info for {title} (ID: {item_id})")
+        return False
+
     logger.info(f"Found {len(subs)} existing subtitles")
-    logger.debug(f"Available subtitles: {[f'{s.get('code2', 'unknown')}: {s.get('path', 'no path')}' for s in subs]}")
-    
-    if any(s['code2'] == FIRST_LANG and s.get('path') for s in subs):
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Available subtitles: %s",
+                     [f"{s.get('code2', 'unknown')}: {s.get('path', 'no path')}" for s in subs])
+
+    if _find_sub(subs, FIRST_LANG):
         logger.info(f"Found existing {FIRST_LANG} subtitles, skipping...")
-        return
-        
-    # Try to find or download English subtitles
+        return False
+
     logger.info("Looking for English subtitles...")
-    en_sub = next((s for s in subs if s['code2'] == 'en' and s.get('path')), None)
+    en_sub = _find_sub(subs, 'en')
     if not en_sub:
         logger.info("No English subtitles found, attempting to download...")
         download_subtitles(media_type, 'en', **params)
-        media_info = get_subtitles_info(media_type, **{f"{k}[]": v for k, v in params.items()})
-        if media_info and 'data' in media_info:
-            en_sub = next((s for s in media_info['data'][0]['subtitles'] if s['code2'] == 'en' and s.get('path')), None)
-            logger.info("English subtitles download completed")
-    
-    if en_sub and en_sub.get('path'):
+        en_sub = _find_sub(get_current_subs(media_type, params) or [], 'en')
+        logger.info(f"English subtitles after download: {'found' if en_sub else 'still missing'}")
+
+    if en_sub:
         logger.info(f"Found English subtitles at: {en_sub['path']}")
         logger.info(f"Attempting to translate from English to {FIRST_LANG}...")
-        result = translate_subtitles(en_sub['path'], FIRST_LANG,
-                                   'movie' if media_type == 'movies' else 'episode',
-                                   item_id)
+        result = translate_subtitles(en_sub['path'], FIRST_LANG, noun, item_id)
         logger.info(f"Translation result: {result}")
-    else:
-        logger.error("No English subtitles with valid path found or downloaded")
+        return True
 
-def translate_movie_subs():
-    logger.info("Starting movie subtitles translation process...")
-    wanted = make_api_request('GET', 'movies/wanted', params={'start': 0, 'length': -1})
-    if wanted and wanted.get('total', 0) > 0:
-        logger.info(f"Found {wanted['total']} movies needing subtitles")
-        for i, movie in enumerate(wanted['data']):
-            process_subtitles(movie, 'movies')
-            if TRANSLATE_DELAY and i < len(wanted['data']) - 1:
-                logger.debug(f"Waiting {TRANSLATE_DELAY}s before next item...")
-                time.sleep(TRANSLATE_DELAY)
-    else:
-        logger.info("No movies found needing subtitles")
+    logger.error("No English subtitles with valid path found or downloaded")
+    return False
 
-def translate_episode_subs():
-    logger.info("Starting episode subtitles translation process...")
-    wanted = make_api_request('GET', 'episodes/wanted', params={'start': 0, 'length': -1})
-    if wanted and wanted.get('total', 0) > 0:
-        logger.info(f"Found {wanted['total']} episodes needing subtitles")
-        for i, episode in enumerate(wanted['data']):
-            process_subtitles(episode, 'episodes')
-            if TRANSLATE_DELAY and i < len(wanted['data']) - 1:
-                logger.debug(f"Waiting {TRANSLATE_DELAY}s before next item...")
-                time.sleep(TRANSLATE_DELAY)
+def translate_wanted(media_type):
+    """Download and translate subtitles for every wanted movie or episode."""
+    noun = media_type[:-1]
+    logger.info(f"Starting {noun} subtitles translation process...")
+    wanted = make_api_request('GET', f"{media_type}/wanted", params={'start': 0, 'length': -1})
+    items = _entries(wanted)
+    if not items:
+        logger.info(f"No {media_type} found needing subtitles")
+        return
+
+    logger.info(f"Found {len(items)} {media_type} needing subtitles")
+    for i, item in enumerate(items):
+        try:
+            translated = process_subtitles(item, media_type)
+        except Exception:
+            logger.exception(f"Failed to process {noun}, skipping to the next item")
+            translated = False
+        if translated and TRANSLATE_DELAY and i < len(items) - 1:
+            logger.debug(f"Waiting {TRANSLATE_DELAY}s before next item...")
+            time.sleep(TRANSLATE_DELAY)
 
 def main():
-    translate_episode_subs()
-    translate_movie_subs()
+    translate_wanted('episodes')
+    translate_wanted('movies')
 
 def get_next_run():
     """Calculate the next run time based on cron schedule."""
@@ -218,4 +241,7 @@ if __name__ == "__main__":
             print(f'Waiting for {int(wait_seconds)} seconds...')
             time.sleep(wait_seconds)
             print('Starting the translate...')
-            main()
+            try:
+                main()
+            except Exception:
+                logger.exception('Run failed, waiting for the next scheduled run')
