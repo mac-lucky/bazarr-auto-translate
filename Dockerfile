@@ -1,8 +1,13 @@
-# Build stage - Use Alpine with uv for fast dependency installation
-FROM python:3.14-alpine AS builder
+# One literal decides the interpreter for both stages. It stays spelled out
+# rather than coming from an ARG because the shared CI workflow greps the FROM
+# lines for a version and would otherwise read back the unexpanded variable.
+FROM python:3.14-alpine AS base
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Build stage - Alpine with uv for fast dependency installation
+FROM base AS builder
+
+# Pinned: a floating tag here would change the resolver between builds.
+COPY --from=ghcr.io/astral-sh/uv:0.11.29 /uv /bin/uv
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -10,26 +15,31 @@ RUN apk add --no-cache \
     musl-dev \
     python3-dev
 
-# Set working directory
 WORKDIR /app
 
-# Copy project files
-COPY pyproject.toml .
-COPY bazarr-auto-translate.py .
+# uv.lock, not pyproject.toml: installing from the loose ranges in pyproject
+# resolves whatever is newest at build time, so the image would not contain the
+# versions CI tested against with --locked.
+COPY pyproject.toml uv.lock ./
 
-# Create virtual environment and install dependencies
-RUN uv venv /venv && \
-    uv pip install --python /venv/bin/python -r pyproject.toml
+ENV UV_PROJECT_ENVIRONMENT=/venv \
+    UV_PYTHON=/usr/local/bin/python3 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
 
-# Runtime stage - Use Alpine for smaller image
-FROM python:3.14-alpine
+# --no-install-project skips building the script's own wheel, which is what
+# makes it safe to copy only the two files above.
+RUN uv sync --locked --no-dev --no-install-project
 
-# Set working directory
+# Runtime stage
+FROM base
+
 WORKDIR /app
 
 # Copy virtual environment and application from builder
 COPY --from=builder /venv /venv
-COPY --from=builder /app/bazarr-auto-translate.py /app/
+COPY bazarr-auto-translate.py /app/
 
 # Set environment path
 ENV PATH="/venv/bin:$PATH"
