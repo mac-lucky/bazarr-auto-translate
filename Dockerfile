@@ -1,13 +1,13 @@
 # One literal decides the interpreter for both stages. It stays spelled out
 # rather than coming from an ARG because the shared CI workflow greps the FROM
 # lines for a version and would otherwise read back the unexpanded variable.
-FROM python:3.14-alpine AS base
+FROM python:3.14-alpine@sha256:26730869004e2b9c4b9ad09cab8625e81d256d1ce97e72df5520e806b1709f92 AS base
 
 # Build stage - Alpine with uv for fast dependency installation
 FROM base AS builder
 
 # Pinned: a floating tag here would change the resolver between builds.
-COPY --from=ghcr.io/astral-sh/uv:0.11.29 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc /uv /bin/uv
 
 # Install build dependencies
 RUN apk add --no-cache \
