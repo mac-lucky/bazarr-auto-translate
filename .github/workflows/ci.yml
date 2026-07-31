@@ -2,12 +2,17 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ master ]
+    tags: [ 'v*' ]
   pull_request:
-    branches: [ main, master ]
-  release:
-    types: [ published ]
+    branches: [ master ]
   workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  security-events: write
+  actions: read
 
 jobs:
   unit-tests:
@@ -39,13 +44,6 @@ jobs:
     name: Python CI/CD Pipeline
     needs: unit-tests
     uses: mac-lucky/actions-shared-workflows/.github/workflows/python-cicd-reusable.yml@master
-    # Add permissions for dependabot PRs
-    permissions:
-      contents: read
-      packages: write
-      security-events: write
-      actions: read
-      pull-requests: read
     with:
       # Application configuration
       app_name: "bazarr-auto-translate"
@@ -67,10 +65,6 @@ jobs:
       enable_security_scan: true
       enable_sbom: true
       enable_code_analysis: true
-
-      # Deployment
-      enable_auto_version: true
-      push_on_main: true
     secrets:
       DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
       DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
