@@ -35,7 +35,7 @@ jobs:
           python-version: "3.14"
 
       - name: Lint
-        run: uvx ruff check . && uvx ruff format --check .
+        run: uvx ruff@0.16.1 check . && uvx ruff@0.16.1 format --check .
 
       - name: Run tests
         run: uv run --locked --group dev pytest tests/ -q
