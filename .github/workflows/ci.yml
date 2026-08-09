@@ -8,6 +8,10 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: write
   packages: write
@@ -15,34 +19,8 @@ permissions:
   actions: read
 
 jobs:
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Install uv
-        # setup-uv stopped publishing floating major tags after v7, so this
-        # has to be an exact version.
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          version: "latest"
-          # Match the Dockerfile: the script uses PEP 701 f-strings, so the
-          # interpreter version is load-bearing.
-          python-version: "3.14"
-
-      - name: Lint
-        run: uvx ruff@0.16.1 check . && uvx ruff@0.16.1 format --check .
-
-      - name: Run tests
-        run: uv run --locked --group dev pytest tests/ -q
-
   ci-cd:
     name: Python CI/CD Pipeline
-    needs: unit-tests
     uses: mac-lucky/actions-shared-workflows/.github/workflows/python-cicd-reusable.yml@master
     with:
       # Application configuration
@@ -57,7 +35,11 @@ jobs:
       # Package manager
       use_uv: true
 
-      # Test configuration
+      # Test configuration. The reusable's unit-test job replaces the old local
+      # gate: pytest comes from the dev dependency group, ruff from the
+      # code-analysis matrix (same 0.16.1 pin as the reusable default).
+      enable_unit_tests: true
+      pytest_args: "tests/ -q"
       enable_container_tests: true
       enable_kubernetes_tests: false
 
