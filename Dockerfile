@@ -35,6 +35,10 @@ RUN uv sync --locked --no-dev --no-install-project
 # Runtime stage
 FROM base
 
+# apk upgrade first: the digest-pinned base can lag Alpine package fixes, and
+# upgrading at build picks them up without waiting for a base-image rebuild.
+RUN apk upgrade --no-cache
+
 WORKDIR /app
 
 # Copy virtual environment and application from builder
