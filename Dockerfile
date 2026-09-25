@@ -1,7 +1,7 @@
 # One literal decides the interpreter for both stages. It stays spelled out
 # rather than coming from an ARG because the shared CI workflow greps the FROM
 # lines for a version and would otherwise read back the unexpanded variable.
-FROM python:3.14-alpine@sha256:016508ba505da24f7139765bc4bb669df4e88eb2f12eeadd571bf2f88d7533df AS base
+FROM python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01 AS base
 
 # Build stage - Alpine with uv for fast dependency installation
 FROM base AS builder
