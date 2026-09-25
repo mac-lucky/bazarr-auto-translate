@@ -28,6 +28,7 @@ CONFIG_VARS = (
     "BAZARR_HOSTNAME",
     "BAZARR_PORT",
     "BAZARR_APIKEY",
+    "BAZARR_APIKEY_FILE",
     "CRON_SCHEDULE",
     "FIRST_LANG",
     "RUN_NOW",
@@ -786,6 +787,25 @@ def test_https_reaches_the_url(clean_env, monkeypatch):
     monkeypatch.setattr(module.session, "request", record)
     module.make_api_request("GET", "movies/wanted")
     assert seen == ["https://bazarr.example.com:6767/api/movies/wanted"]
+
+
+def test_apikey_from_file_wins_over_env(clean_env, tmp_path):
+    secret = tmp_path / "bazarr_apikey"
+    secret.write_text("from-file\n")
+    clean_env.setenv("BAZARR_APIKEY", "from-env")
+    clean_env.setenv("BAZARR_APIKEY_FILE", str(secret))
+    module = _load_module(clean_env)
+    assert module.BAZARR_APIKEY == "from-file"
+    assert module.HEADERS["X-API-KEY"] == "from-file"
+
+
+def test_unreadable_apikey_file_falls_back_to_env(clean_env, tmp_path, caplog):
+    clean_env.setenv("BAZARR_APIKEY", "from-env")
+    clean_env.setenv("BAZARR_APIKEY_FILE", str(tmp_path / "missing"))
+    with caplog.at_level(logging.WARNING):
+        module = _load_module(clean_env)
+    assert module.BAZARR_APIKEY == "from-env"
+    assert "BAZARR_APIKEY_FILE" in caplog.text
 
 
 def test_hostname_given_as_a_url_is_repaired(clean_env):

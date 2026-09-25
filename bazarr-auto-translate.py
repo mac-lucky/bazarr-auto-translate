@@ -72,6 +72,26 @@ def _env_host(name):
     return value
 
 
+def _env_secret(name):
+    """A secret from the file named by NAME_FILE, else from NAME itself.
+
+    The file form is for Docker/compose secrets: the value then never appears
+    in the container's environment, so `docker inspect` and a printed compose
+    config (a deploy log) do not show it. An unreadable file falls back to NAME
+    with a warning rather than stopping the daemon.
+    """
+    path = os.environ.get(f"{name}_FILE", "").strip()
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError as e:
+            logger.warning(
+                f"{name}_FILE={path!r} could not be read ({e}), using {name}"
+            )
+    return os.environ.get(name, "")
+
+
 def _env_level(name, default):
     """A logging level, plus the complaint to make once logging is configured."""
     requested = os.environ.get(name, "").strip().upper()
@@ -99,7 +119,7 @@ if _bad_log_level:
 # Bazarr Information
 BAZARR_HOSTNAME = _env_host("BAZARR_HOSTNAME")
 BAZARR_PORT = os.environ.get("BAZARR_PORT", "6767")
-BAZARR_APIKEY = os.environ.get("BAZARR_APIKEY", "")
+BAZARR_APIKEY = _env_secret("BAZARR_APIKEY")
 
 # Scheme to reach Bazarr on. The API key travels in a header, so https is worth
 # having whenever Bazarr is not on a trusted LAN.

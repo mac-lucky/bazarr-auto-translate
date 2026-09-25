@@ -31,6 +31,7 @@ This project automatically downloads and translates subtitles for episodes and m
 | `BAZARR_HOSTNAME` | (required) | Hostname of your Bazarr instance, without a scheme |
 | `BAZARR_PORT` | `6767` | Port of your Bazarr instance |
 | `BAZARR_APIKEY` | (required) | Your Bazarr API key |
+| `BAZARR_APIKEY_FILE` | (unset) | Path to a file holding the API key, e.g. a Docker secret at `/run/secrets/bazarr_apikey`. Takes precedence over `BAZARR_APIKEY` and keeps the key out of the container's environment |
 | `BAZARR_SCHEME` | `http` | `http` or `https`. The API key travels in a header, so prefer `https` off a trusted LAN |
 | `CRON_SCHEDULE` | `0 6 * * *` | When to run, in the container's local time. Set `TZ` to choose that zone; without it the container runs on UTC |
 | `FIRST_LANG` | `pl` | Target language code |
