@@ -2,10 +2,9 @@
 
 # bazarr-auto-translate
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/maclucky/bazarr-auto-translate)](https://hub.docker.com/r/maclucky/bazarr-auto-translate)
-[![Docker Image Version](https://img.shields.io/docker/v/maclucky/bazarr-auto-translate/latest)](https://hub.docker.com/r/maclucky/bazarr-auto-translate/tags)
+[![GitHub Release](https://img.shields.io/github/v/release/mac-lucky/bazarr-auto-translate)](https://github.com/mac-lucky/bazarr-auto-translate/releases)
 [![GitHub Actions Workflow Status](https://github.com/mac-lucky/bazarr-auto-translate/actions/workflows/ci.yml/badge.svg)](https://github.com/mac-lucky/bazarr-auto-translate/actions/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-blue)](https://hub.docker.com/r/maclucky/bazarr-auto-translate/tags)
+[![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-blue)](https://github.com/mac-lucky/bazarr-auto-translate/pkgs/container/bazarr-auto-translate)
 
 This project automatically downloads and translates subtitles for episodes and movies using the Bazarr API.
 
@@ -64,16 +63,16 @@ forgotten immediately.
 
 ### Using Pre-built Image
 
-Pull and run the image directly from Docker Hub:
+Pull and run the image from GitHub Container Registry:
 ```sh
-docker pull maclucky/bazarr-auto-translate:latest
+docker pull ghcr.io/mac-lucky/bazarr-auto-translate:latest
 docker run -e BAZARR_HOSTNAME=your_bazarr_hostname \
            -e BAZARR_PORT=6767 \
            -e BAZARR_APIKEY=your_bazarr_apikey \
            -e CRON_SCHEDULE='0 6 * * *' \
            -e FIRST_LANG=pl \
            -v bazarr-auto-translate-state:/state \
-           maclucky/bazarr-auto-translate:latest
+           ghcr.io/mac-lucky/bazarr-auto-translate:latest
 ```
 
 ### Building Locally
