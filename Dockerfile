@@ -7,7 +7,7 @@ FROM python:3.15-alpine@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d2
 FROM base AS builder
 
 # Pinned: a floating tag here would change the resolver between builds.
-COPY --from=ghcr.io/astral-sh/uv:0.13.2@sha256:b9fddcde095a7aeafd499024adb8927df6619c7c5672f5ff7126474715f62ba4 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.3@sha256:bee0a2a458fd956c5df7b8b4c5fed2257b0af34866e3da7b51db0be3acb375d1 /uv /bin/uv
 
 # Install build dependencies
 RUN apk add --no-cache \
