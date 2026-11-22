@@ -687,6 +687,20 @@ def test_unwritable_state_dir_does_not_crash_the_run(bat, monkeypatch, tmp_path)
     assert bat.load_state() == {}
 
 
+def test_unwritable_state_dir_warns_once_per_run(bat, monkeypatch, tmp_path, caplog):
+    """Regression: the save after each item repeated the warning per item."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("i am a file, not a directory")
+    monkeypatch.setattr(bat, "STATE_DIR", str(blocker / "state"))
+    stub_wanted(bat, monkeypatch, {"data": [MOVIE, MOVIE, MOVIE]})
+    monkeypatch.setattr(bat, "process_subtitles", lambda i, m: bat.NO_SOURCE)
+    with caplog.at_level(logging.DEBUG, logger=bat.logger.name):
+        bat.main()
+    failed = [r for r in caplog.records if "Could not save state" in r.getMessage()]
+    assert len(failed) > 1  # every item still tried to save
+    assert [r.levelno for r in failed].count(logging.WARNING) == 1
+
+
 # Run deadline
 
 

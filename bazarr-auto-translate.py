@@ -319,8 +319,12 @@ def load_state():
         return {}
 
 
-def save_state(state):
-    """Write the deferral state, or explain why hopeless items will repeat."""
+def save_state(state, quiet=False):
+    """Write the deferral state, or explain why hopeless items will repeat.
+
+    quiet logs a failure at debug level only. The saves between items use it so
+    an unwritable STATE_DIR warns once per run, from main()'s final save.
+    """
     path = _state_path()
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
@@ -330,7 +334,7 @@ def save_state(state):
             json.dump(state, handle, indent=2, sort_keys=True)
         os.replace(temporary, path)
     except OSError as e:
-        logger.warning(
+        (logger.debug if quiet else logger.warning)(
             f"Could not save state to {path}: {e}. "
             "Items with no source subtitles will be retried every run."
         )
@@ -569,7 +573,7 @@ def translate_wanted(media_type, state, started=None):
         # Save now: a stop mid-request can outlast Docker's grace period and
         # kill us before main() gets to its final save.
         if _record_outcome(state, item, media_type, outcome):
-            save_state(state)
+            save_state(state, quiet=True)
         if outcome == TRANSLATED and TRANSLATE_DELAY and i < len(due) - 1:
             logger.debug("Waiting %ss before next item...", TRANSLATE_DELAY)
             if _sleep(TRANSLATE_DELAY):
