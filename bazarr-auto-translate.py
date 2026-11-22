@@ -241,7 +241,8 @@ def make_api_request(method, endpoint, retries=0, **kwargs):
             )
             response.raise_for_status()
             logger.debug(f"API Response: {response.status_code}")
-            return response.json() if response.content else None
+            # {} for an empty body (Bazarr's 204s), so None always means failure
+            return response.json() if response.content else {}
         # ConnectTimeout subclasses both of these, so catching them together
         # keeps the ordering from deciding which handler wins. Bazarr getting
         # restarted underneath a long-lived session lands here.
@@ -495,6 +496,9 @@ def process_subtitles(item, media_type):
         logger.info(f"Attempting to translate from English to {FIRST_LANG}...")
         result = translate_subtitles(en_sub["path"], FIRST_LANG, noun, item_id)
         logger.info(f"Translation result: {result}")
+        if result is None:
+            logger.error("Translation request failed, trying again next run")
+            return FAILED
         return TRANSLATED
 
     logger.error("No English subtitles with valid path found or downloaded")

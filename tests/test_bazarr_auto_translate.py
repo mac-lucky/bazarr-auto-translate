@@ -221,6 +221,13 @@ def test_english_subtitles_trigger_translation(bat, monkeypatch, translated):
     assert translated == [("/movie.en.srt", bat.FIRST_LANG, "movie", 1)]
 
 
+def test_failed_translate_request_is_not_counted_as_translated(bat, monkeypatch):
+    """Regression: a request that gave up still cleared the item's deferral."""
+    stub_info(bat, monkeypatch, with_subs({"code2": "en", "path": "/movie.en.srt"}))
+    monkeypatch.setattr(bat, "translate_subtitles", lambda *a: None)
+    assert bat.process_subtitles(MOVIE, "movies") == bat.FAILED
+
+
 def test_english_downloaded_on_second_lookup(bat, monkeypatch, translated):
     stub_info(
         bat, monkeypatch, with_subs(), with_subs({"code2": "en", "path": "/ep.en.srt"})
@@ -407,9 +414,10 @@ def test_successful_request_returns_the_payload(raw, transport):
     assert transport.naps == []
 
 
-def test_empty_body_returns_none(raw, transport):
+def test_empty_body_returns_an_empty_dict(raw, transport):
+    """Bazarr answers PATCHes with 204, which must not read as a failure."""
     transport(FakeResponse(content=b""))
-    assert raw.make_api_request("PATCH", "subtitles") is None
+    assert raw.make_api_request("PATCH", "subtitles") == {}
 
 
 def test_rate_limit_is_retried_with_doubling_backoff(raw, transport):
