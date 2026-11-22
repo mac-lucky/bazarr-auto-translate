@@ -95,7 +95,7 @@ def translated(bat, monkeypatch):
 
     def fake(*args):
         calls.append(args)
-        return {"status": "ok"}
+        return {}  # Bazarr queues the job and answers 204 with no body
 
     monkeypatch.setattr(bat, "translate_subtitles", fake)
     return calls
