@@ -592,6 +592,28 @@ def test_changed_outcome_is_saved_before_the_run_ends(state_dir, monkeypatch):
     assert bat.load_state()["movies:1"]["failures"] == 1
 
 
+@pytest.mark.parametrize("outcome_name", ["TRANSLATED", "SATISFIED"])
+def test_cleared_deferral_is_saved_before_the_next_item(
+    state_dir, monkeypatch, sleeps, outcome_name
+):
+    """A run killed after an item resolves must not leave it deferred on disk."""
+    bat = state_dir
+    bat.save_state({"movies:1": {"failures": 2, "next_attempt": "2020-01-01T00:00:00"}})
+    other = {"radarrId": 4, "title": "Other Movie"}
+    on_disk = []
+
+    def process(item, media_type):
+        if item is MOVIE:
+            return getattr(bat, outcome_name)
+        on_disk.append(bat.load_state())
+        return bat.FAILED
+
+    stub_wanted(bat, monkeypatch, {"data": [MOVIE, other]})
+    monkeypatch.setattr(bat, "process_subtitles", process)
+    bat.translate_wanted("movies", bat.load_state())
+    assert on_disk == [{}]
+
+
 def test_unchanged_outcome_does_not_write_state(state_dir, monkeypatch):
     bat, saved = state_dir, []
     monkeypatch.setattr(bat, "save_state", saved.append)
