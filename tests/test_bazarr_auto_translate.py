@@ -582,6 +582,26 @@ def test_transient_failure_does_not_defer(state_dir):
     assert state == {}
 
 
+def test_changed_outcome_is_saved_before_the_run_ends(state_dir, monkeypatch):
+    """A stop mid-request can outlast Docker's grace period, so main()'s
+    final save alone loses the run's deferrals."""
+    bat = state_dir
+    stub_wanted(bat, monkeypatch, {"data": [MOVIE]})
+    monkeypatch.setattr(bat, "process_subtitles", lambda i, m: bat.NO_SOURCE)
+    bat.translate_wanted("movies", {})
+    assert bat.load_state()["movies:1"]["failures"] == 1
+
+
+def test_unchanged_outcome_does_not_write_state(state_dir, monkeypatch):
+    bat, saved = state_dir, []
+    monkeypatch.setattr(bat, "save_state", saved.append)
+    stub_wanted(bat, monkeypatch, {"data": [MOVIE, MOVIE]})
+    outcomes = iter([bat.FAILED, bat.SATISFIED])
+    monkeypatch.setattr(bat, "process_subtitles", lambda i, m: next(outcomes))
+    bat.translate_wanted("movies", {})
+    assert saved == []
+
+
 def test_deferred_items_are_skipped(state_dir, monkeypatch):
     bat = state_dir
     future = (datetime.now().astimezone() + timedelta(days=2)).isoformat(

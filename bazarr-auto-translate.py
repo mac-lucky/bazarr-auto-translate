@@ -367,7 +367,10 @@ def _is_deferred(entry, now):
 
 
 def _record_outcome(state, item, media_type, outcome):
-    """Back an item off after a hopeless run, or clear it once it resolves."""
+    """Back an item off after a hopeless run, or clear it once it resolves.
+
+    True when the state changed.
+    """
     key = _state_key(item, media_type)
     if outcome == NO_SOURCE:
         failures = state.get(key, {}).get("failures", 0) + 1
@@ -380,8 +383,10 @@ def _record_outcome(state, item, media_type, outcome):
             f"Nothing to translate from after {failures} attempts, "
             f"leaving it until {next_attempt:%Y-%m-%d}"
         )
-    elif outcome in (TRANSLATED, SATISFIED):
-        state.pop(key, None)
+        return True
+    if outcome in (TRANSLATED, SATISFIED):
+        return state.pop(key, None) is not None
+    return False
 
 
 def _entries(response):
@@ -561,7 +566,10 @@ def translate_wanted(media_type, state, started=None):
         except Exception:
             logger.exception(f"Failed to process {noun}, skipping to the next item")
             outcome = FAILED
-        _record_outcome(state, item, media_type, outcome)
+        # Save now: a stop mid-request can outlast Docker's grace period and
+        # kill us before main() gets to its final save.
+        if _record_outcome(state, item, media_type, outcome):
+            save_state(state)
         if outcome == TRANSLATED and TRANSLATE_DELAY and i < len(due) - 1:
             logger.debug("Waiting %ss before next item...", TRANSLATE_DELAY)
             if _sleep(TRANSLATE_DELAY):
